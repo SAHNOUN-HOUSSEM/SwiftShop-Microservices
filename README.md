@@ -1,82 +1,123 @@
 # SwiftShop | E-commerce Microservices
 
-### Overview
-SwiftShop is a distributed e-commerce platform developed with a microservices architecture. It offers a smooth and user-friendly shopping experience with independent services that handle specific functionalities, promoting scalability, reliability, and maintainability.
+SwiftShop is an e-commerce web application built with a **microservices architecture**: Spring Boot services behind a Spring Cloud API Gateway, with Eureka service discovery, OpenFeign for service-to-service calls, RabbitMQ for asynchronous notifications, and a React + TypeScript storefront.
 
----
-## Repositories
+> **Academic team project.** SwiftShop was built in 2024 by a team of INSAT software engineering students as part of the *Personal and Professional Project (PPP)* course. It is a learning project, not a production system.
 
-The SwiftShop project is split into two repositories for better modularity and organization:
+This repository is the project's landing page. The code lives in two repositories:
 
-- **Backend Repository:** [PPP_E-commerce_microservices_Backend](https://github.com/SAHNOUN-HOUSSEM/PPP_E-commerce_microservices_Backend)  
-  Contains the backend services built with Spring Boot, utilizing a microservices architecture with RabbitMQ, Eureka, Docker, and Kubernetes for orchestration and communication.
+| Repository | Content |
+|---|---|
+| [PPP_E-commerce_microservices_Backend](https://github.com/SAHNOUN-HOUSSEM/PPP_E-commerce_microservices_Backend) | Spring Boot microservices, with a [detailed README](https://github.com/SAHNOUN-HOUSSEM/PPP_E-commerce_microservices_Backend/blob/main/README.md) covering architecture, endpoints and local setup |
+| [PPP_E-commerce_microservices_Frontend](https://github.com/SAHNOUN-HOUSSEM/PPP_E-commerce_microservices_Frontend) | React + TypeScript storefront and admin dashboard |
 
-- **Frontend Repository:** [PPP_E-commerce_microservices_Frontend](https://github.com/SAHNOUN-HOUSSEM/PPP_E-commerce_microservices_Frontend)  
-  Contains the frontend application built with React and TypeScript, providing a user-friendly interface for browsing, cart management, and checkout.
+## Key features
 
----
-## Table of Contents
-- [Technologies Used](#technologies-used)
-- [Architecture](#architecture)
-- [Microservices Overview](#microservices-overview)
-- [Installation and Setup](#installation-and-setup)
+- **Accounts and authentication**: registration and login, BCrypt-hashed passwords, JWT tokens checked by the API gateway.
+- **Catalog**: products, brands and categories with pagination, sorting and category search; product images stored on Cloudinary.
+- **Cart and orders**: a cart kept in the browser, order placement with a stock check, and order history (own orders for users, all orders for admins). There is no online payment.
+- **Notifications**: registration and order events sent through RabbitMQ and stored by a notification service.
+- **Admin dashboard**: catalog and user screens shown to `ADMIN` accounts in the frontend.
 
----
+## Technology stack
 
-## Technologies Used
-- **Backend:** Spring Boot, Spring Cloud
-- **Frontend:** React with TypeScript
-- **Message Broker:** RabbitMQ
-- **Service Discovery:** Eureka
-- **Containerization and Orchestration:** Docker, Kubernetes
-
----
+| Area | Technologies |
+|---|---|
+| Backend | Java 17, Spring Boot 2.5, Spring Cloud 2020.0 |
+| Edge and discovery | Spring Cloud Gateway, Netflix Eureka |
+| Service communication | Spring Cloud OpenFeign (synchronous), RabbitMQ (asynchronous) |
+| Data | PostgreSQL, one database per service (Spring Data JPA / Hibernate) |
+| Security | Spring Security, JWT (HS256), BCrypt |
+| Tracing | Spring Cloud Sleuth and Zipkin (configured; end-to-end tracing not verified) |
+| Media | Cloudinary |
+| Frontend | React 18, TypeScript, Vite, Tailwind CSS, React Router, Axios |
+| Local infrastructure | Docker Compose for supporting services (PostgreSQL, pgAdmin, RabbitMQ, Zipkin) |
 
 ## Architecture
-SwiftShop is built using a microservices architecture that allows each service to be developed, deployed, and scaled independently. Services communicate synchronously for order processing and data consistency, and asynchronously for tasks like user notifications.
 
-Key components of the architecture include:
-- **Eureka Server:** Enables service discovery and synchronous communication.
-- **API Gateway:** Manages load balancing, user routing, and authentication.
-- **RabbitMQ:** Facilitates asynchronous communication for efficient notification handling.
+```mermaid
+flowchart LR
+    ui[React + TypeScript frontend] --> gw[API Gateway<br/>routing + JWT check]
 
----
+    gw --> auth[Auth Service]
+    gw --> product[Product Service]
+    gw --> order[Order Service]
 
-## Microservices Overview
+    order -.->|OpenFeign| auth
+    order -.->|OpenFeign| product
 
-### 1. **Eureka Server**
-   - Provides service discovery, enabling microservices to locate and communicate with each other dynamically.
+    auth -->|events| mq[(RabbitMQ)]
+    order -->|events| mq
+    mq --> notif[Notification Service]
 
-### 2. **API Gateway**
-   - Acts as a load balancer and a router.
-   - Manages access to other services and communicates with the Auth Service for user authentication.
+    product --> cloud[Cloudinary]
 
-### 3. **Auth Service**
-   - Manages user authentication with JWT tokens for secure access.
+    auth --> db1[(users DB)]
+    product --> db2[(products DB)]
+    order --> db3[(orders DB)]
+    notif --> db4[(notifications DB)]
 
-### 4. **User Service**
-   - Handles user profile updates and stores user-related information.
+    eureka{{Eureka<br/>service discovery}}
+    gw -.- eureka
+```
 
-### 5. **Product Service**
-   - Manages the product catalog, allowing users to browse, add to cart, and complete purchases.
+- **Eureka** is the service registry. All services register with it, and the gateway and OpenFeign clients look services up by name through it. This lets the gateway route to services by name, using client-side load balancing.
+- **OpenFeign** carries the synchronous calls. The order service validates the caller's token and loads the user through the auth service, and checks and updates stock through the product service.
+- **RabbitMQ** carries asynchronous events. The auth and order services publish them; the notification service consumes them.
+- **Database per service**: each service owns its PostgreSQL database and never reads another service's tables.
 
-### 6. **Order Service**
-   - Processes customer orders and updates the product inventory in real-time.
+## Microservices and responsibilities
 
-### 7. **Notification Service**
-   - Listens to events from the Order and Auth services to inform users of order confirmations and updates.
+| Service | Responsibility |
+|---|---|
+| Eureka Server | Service registry; the other services register and resolve each other by name |
+| API Gateway | Single entry point: routes requests to the services through Eureka, validates JWT signatures locally on protected routes, configures CORS |
+| Auth Service | Registration, login and JWT issuing; user profiles and roles (`USER`, `ADMIN`); publishes a registration event |
+| Product Service | Products, brands and categories, image upload to Cloudinary, stock checks and stock updates for orders |
+| Order Service | Order placement and history; checks stock before saving an order and asks the product service to decrement stock afterwards (separate steps, not a distributed transaction); publishes an order event |
+| Notification Service | Consumes RabbitMQ events and stores them; attempts a registration confirmation email |
 
----
+User management lives in the Auth Service. The backend repository also contains an empty legacy `user-service` module.
 
+## Frontend
 
+The storefront is a **React 18 + TypeScript** single-page application built with **Vite** and styled with **Tailwind CSS**. It provides:
+- catalog browsing by category, with search, sorting and paging, and product detail pages;
+- registration and login;
+- a cart kept in the browser's local storage;
+- order placement and order history;
+- an admin dashboard for products, brands, categories, users and orders.
 
-## Installation and Setup
+Some pages are placeholders or not connected to the backend: the wishlist, the standalone cart page and the profile settings form.
 
-### Prerequisites
-Ensure that you have the following installed:
-- Docker
-- Kubernetes
-- RabbitMQ
-- Eureka
-- Java 8+ for Spring Boot services
-- Node.js for the frontend
+## Getting started
+
+Detailed configuration and setup steps are in the [backend README](https://github.com/SAHNOUN-HOUSSEM/PPP_E-commerce_microservices_Backend/blob/main/README.md#running-locally). In short, you need:
+
+- **JDK 17** and **Maven**. The build fails on JDK 21 because of the project's Lombok version.
+- **Docker Compose** for the supporting infrastructure (PostgreSQL, pgAdmin, RabbitMQ, Zipkin). The four service databases are created by hand.
+- Your own **Cloudinary** credentials, kept outside the repository.
+- **Node.js** for the frontend (`npm install`, then `npm run dev`).
+
+The backend's parent `pom.xml` still lists a missing `sse-service` module, so the published source needs a temporary local workaround (described in the backend README) before it builds.
+
+**What has been verified.** The backend builds on JDK 17 with that workaround, and the Eureka server starts. Running the other services, the Docker Compose infrastructure and the full application end to end has not been verified.
+
+## Known limitations
+
+> **Security:** SwiftShop is an academic project and has not undergone production security hardening. Authentication, authorization, sensitive-data handling and input validation have known limitations. It should not be deployed to an untrusted network or used with real user data without further review and remediation.
+
+- **No automated tests** in the backend.
+- **No containerized services or orchestration.** Docker Compose runs only the supporting infrastructure, the services have no Dockerfiles, and there are no Kubernetes manifests.
+- **Build workaround needed** for the missing `sse-service` module (see *Getting started*).
+- **No distributed transaction for orders.** Saving an order, updating stock and publishing the event are separate steps, so a failure in between can leave data inconsistent.
+- **Registration emails** are not expected to work as currently written.
+- **Hard-coded API address.** The frontend calls the gateway at `http://localhost:8083`.
+
+## Team
+
+Academic team project by INSAT software engineering students. Contributors, from the GitHub repositories:
+
+- [SAHNOUN-HOUSSEM](https://github.com/SAHNOUN-HOUSSEM)
+- [FkihMehdi](https://github.com/FkihMehdi)
+- [mehdi-khelil](https://github.com/mehdi-khelil)
